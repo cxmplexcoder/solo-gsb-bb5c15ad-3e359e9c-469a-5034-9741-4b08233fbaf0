@@ -1,4 +1,5 @@
-"""FastAPI 入口：提供静态页面与 /api/solve 联立求解、/api/redundancy 约束冗余核对接口。"""
+"""FastAPI 入口：提供静态页面与 /api/solve 联立求解、/api/redundancy 约束冗余核对、
+/api/compare 两版比较接口。"""
 
 from __future__ import annotations
 
@@ -7,9 +8,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .solver import check_redundancy, solve
+from .solver import check_redundancy, compare_texts, solve
 
-app = FastAPI(title="口述史事件时间线核对", version="1.1.0")
+app = FastAPI(title="口述史事件时间线核对", version="1.2.0")
 
 
 class SolveRequest(BaseModel):
@@ -19,6 +20,11 @@ class SolveRequest(BaseModel):
 class RedundancyRequest(BaseModel):
     text: str = ""
     line: int = 0
+
+
+class CompareRequest(BaseModel):
+    base_text: str = ""
+    revised_text: str = ""
 
 
 @app.get("/api/health")
@@ -35,6 +41,10 @@ def api_solve(req: SolveRequest) -> dict:
 def api_redundancy(req: RedundancyRequest) -> dict:
     return check_redundancy(req.text or "", req.line)
 
+
+@app.post("/api/compare")
+def api_compare(req: CompareRequest) -> dict:
+    return compare_texts(req.base_text or "", req.revised_text or "")
 
 @app.get("/")
 def index() -> FileResponse:

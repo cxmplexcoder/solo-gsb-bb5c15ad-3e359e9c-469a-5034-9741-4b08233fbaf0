@@ -376,3 +376,186 @@ inputEl.addEventListener("input", () => {
   redundancyEl.innerHTML = "";  // 文本已变，旧的冗余结论作废
 });
 refreshLineOptions();
+
+// ---------- 两版比较 ----------
+
+const COMPARE_BASE_EXAMPLE = [
+  "起床,洗漱,10,30",
+  "洗漱,早饭,15,45",
+  "早饭,出门,20,60",
+  "出门,开会,40,90",
+  "起床,开会,80,240",
+].join("\n");
+
+// 修订版：第 2 行最少间隔 15→20（早饭及之后整体推迟）；
+// 新增第 5 行“午休”；原第 5 行“起床,开会,80,240”被删除。
+const COMPARE_REV_EXAMPLE = [
+  "起床,洗漱,10,30",
+  "洗漱,早饭,20,50",
+  "早饭,出门,20,60",
+  "出门,开会,40,90",
+  "开会,午休,30,60",
+].join("\n");
+
+const compareEl = $("compare-result");
+const compareBaseEl = $("compare-base");
+const compareRevEl = $("compare-revised");
+
+function fmtDelta(d) {
+  if (d === 0) return '<span class="muted">0（未变）</span>';
+  if (d > 0) return `<span class="delta-up">+${d} ▲ 推迟</span>`;
+  return `<span class="delta-down">${d} ▼ 提前</span>`;
+}
+
+function lineText(r) {
+  return `${esc(r.a)} → ${esc(r.b)} <span class="num">[${r.low}, ${r.high}]</span>`;
+}
+
+// 任一版本无效/矛盾时：分别展示各版本自己的错误或闭合矛盾链，不生成差异结论
+function renderVersionProblem(label, v) {
+  if (v.status === "error") {
+    const items = (v.errors || []).map((e) => `<li>${esc(e.message)}</li>`).join("");
+    return `
+      <div class="card compare-version">
+        <h3>${label}：输入校验未通过</h3>
+        <ul class="plain">${items}</ul>
+      </div>`;
+  }
+  // conflict：复用矛盾链渲染（临时容器承接其完整 HTML）
+  const tmp = document.createElement("div");
+  renderConflict(v, tmp);
+  return `<div class="compare-version"><h3 class="version-heading">${label}：区间存在闭合矛盾链</h3>${tmp.innerHTML}</div>`;
+}
+
+function renderCompareBlocked(data) {
+  compareEl.innerHTML = `
+    <div class="banner err">
+      <h2>两版比较未进行</h2>
+      <p>至少一个版本校验失败或区间互相矛盾，<strong>不生成差异结论</strong>。以下分别给出各版本自己的问题：</p>
+    </div>
+    ${renderVersionProblem("基准文本", data.base)}
+    ${renderVersionProblem("修订文本", data.revised)}`;
+}
+
+function renderCompareOk(data) {
+  const s = data.summary;
+
+  const alignRows = data.aligned.map((x) => `
+    <tr class="${x.changed ? "shifted" : ""}">
+      <td>${esc(x.event)}</td>
+      <td class="num">${x.base_minute}</td>
+      <td class="num">${x.revised_minute}</td>
+      <td class="num">${fmtDelta(x.delta)}</td>
+      <td>${
+        x.evidence_lines.length
+          ? x.evidence_lines.map((r) =>
+              `<a class="ev-chip" href="#changed-line-${r.line}" title="第 ${r.line} 行：删去后该事件分钟将不同">
+                 第 ${r.line} 行 · ${esc(r.a)}→${esc(r.b)} [${r.low}, ${r.high}]
+               </a>`).join(" ")
+          : '<span class="muted">—</span>'
+      }</td>
+    </tr>`).join("");
+
+  const addedHtml = data.added_events.length
+    ? `<div class="card">
+        <h3>新增事件（${data.added_events.length}）</h3>
+        <table>
+          <thead><tr><th>事件</th><th class="num">修订版分钟</th></tr></thead>
+          <tbody>${data.added_events.map((e) =>
+            `<tr><td>${esc(e.event)}</td><td class="num">${e.revised_minute}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>` : "";
+
+  const removedHtml = data.removed_events.length
+    ? `<div class="card">
+        <h3>删除事件（${data.removed_events.length}）</h3>
+        <table>
+          <thead><tr><th>事件</th><th class="num">基准版分钟</th></tr></thead>
+          <tbody>${data.removed_events.map((e) =>
+            `<tr><td>${esc(e.event)}</td><td class="num">${e.base_minute}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>` : "";
+
+  const labels = { added: "新增", modified: "修改", removed: "删除" };
+  const evidenceRows = data.changed_lines.map((d) => {
+    const r = d.type === "removed" ? d.base : d.revised;
+    let detail;
+    if (d.type === "added") {
+      detail = `修订版第 ${r.line} 行：${lineText(r)}`;
+    } else if (d.type === "removed") {
+      detail = `基准版第 ${r.line} 行：${lineText(r)}`;
+    } else {
+      detail = `基准第 ${d.base.line} 行：${lineText(d.base)}
+                <span class="chain-arrow">→</span>
+                修订第 ${d.revised.line} 行：${lineText(d.revised)}`;
+    }
+    return `
+      <div class="ev-item" id="changed-line-${r.line}">
+        <span class="tag ev-tag-${d.type}">${labels[d.type]}</span>
+        <span class="ev-detail">${detail}</span>
+      </div>`;
+  }).join("");
+
+  compareEl.innerHTML = `
+    <div class="banner ok">
+      <h2>✓ 两版均有效，已按事件名对齐</h2>
+      <p>共同事件 ${s.common_count} 个，其中 <strong>${s.shifted_count}</strong> 个分钟发生变化；
+      新增事件 ${s.added_count} 个、删除事件 ${s.removed_count} 个；修订版约束行
+      ${s.base_line_count} → ${s.revised_line_count} 条，变更行（新增/修改/删除）见下方证据区。</p>
+    </div>
+    <div class="card">
+      <h3>共同事件对齐表</h3>
+      <table>
+        <thead><tr>
+          <th>事件</th><th class="num">基准分钟</th><th class="num">修订分钟</th>
+          <th class="num">变化</th><th>导致变化的修订行</th>
+        </tr></thead>
+        <tbody>${alignRows}</tbody>
+      </table>
+      <p class="muted">分钟取各版规范时间线（最早事件 = 第 0 分钟，与上方联立结果一致）；
+      “导致变化的修订行”经反事实验证：从修订版中删去该行并重新联立，该事件分钟会改变。点击行号可定位到下方证据。</p>
+    </div>
+    ${addedHtml}
+    ${removedHtml}
+    <div class="card">
+      <h3>变更行证据</h3>
+      ${evidenceRows || '<p class="muted">两版约束行完全一致。</p>'}
+    </div>`;
+}
+
+async function compareVersions() {
+  compareEl.innerHTML = `<div class="card muted">两版独立联立与对齐中…</div>`;
+  try {
+    const resp = await fetch("/api/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_text: compareBaseEl.value,
+        revised_text: compareRevEl.value,
+      }),
+    });
+    const data = await resp.json();
+    if (data.status === "ok") renderCompareOk(data);
+    else renderCompareBlocked(data);
+  } catch (err) {
+    compareEl.innerHTML = `
+      <div class="banner err"><h2>请求失败</h2><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+$("btn-compare").addEventListener("click", compareVersions);
+$("btn-compare-example").addEventListener("click", () => {
+  compareBaseEl.value = COMPARE_BASE_EXAMPLE;
+  compareRevEl.value = COMPARE_REV_EXAMPLE;
+  compareVersions();
+});
+$("btn-compare-clear").addEventListener("click", () => {
+  compareBaseEl.value = "";
+  compareRevEl.value = "";
+  compareEl.innerHTML = "";
+  compareBaseEl.focus();
+});
+// 任一输入框变化即清空旧的比较结论
+for (const el of [compareBaseEl, compareRevEl]) {
+  el.addEventListener("input", () => { compareEl.innerHTML = ""; });
+}

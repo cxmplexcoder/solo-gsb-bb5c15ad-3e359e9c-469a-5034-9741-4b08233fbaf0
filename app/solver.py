@@ -119,6 +119,28 @@ def _edge_step(names: list[str], e: Edge) -> dict:
     }
 
 
+def _index_events(rows: list[Row]) -> tuple[list[str], dict[str, int]]:
+    """事件按首次出现顺序编号。"""
+    names: list[str] = []
+    index: dict[str, int] = {}
+    for r in rows:
+        for name in (r.a, r.b):
+            if name not in index:
+                index[name] = len(names)
+                names.append(name)
+    return names, index
+
+
+def _constraint_edges(rows: list[Row], index: dict[str, int]) -> list[Edge]:
+    """每行建立上界、下界两条边。"""
+    edges: list[Edge] = []
+    for r in rows:
+        ia, ib = index[r.a], index[r.b]
+        edges.append(Edge(ia, ib, r.high, r.line, "upper", r.high))
+        edges.append(Edge(ib, ia, -r.low, r.line, "lower", r.low))
+    return edges
+
+
 def solve(text: str) -> dict:
     rows, errors = parse_text(text)
     if errors:
@@ -131,19 +153,8 @@ def solve(text: str) -> dict:
         }
 
     # 事件按首次出现顺序编号
-    names: list[str] = []
-    index: dict[str, int] = {}
-    for r in rows:
-        for name in (r.a, r.b):
-            if name not in index:
-                index[name] = len(names)
-                names.append(name)
-
-    edges: list[Edge] = []
-    for r in rows:
-        ia, ib = index[r.a], index[r.b]
-        edges.append(Edge(ia, ib, r.high, r.line, "upper", r.high))
-        edges.append(Edge(ib, ia, -r.low, r.line, "lower", r.low))
+    names, index = _index_events(rows)
+    edges = _constraint_edges(rows, index)
 
     n = len(names)
     dist = [0] * n
@@ -296,22 +307,11 @@ def check_redundancy(text: str, line: int) -> dict:
             "errors": [{"line": line, "message": f"第{line}行不是一条有效约束行（空行或不存在的行号），无法核对。"}],
         }
 
-    names: list[str] = []
-    index: dict[str, int] = {}
-    for r in rows:
-        for name in (r.a, r.b):
-            if name not in index:
-                index[name] = len(names)
-                names.append(name)
+    names, index = _index_events(rows)
 
     # 移除所选行对应的上、下界两条约束，其余行照常建边
-    edges: list[Edge] = []
-    for r in rows:
-        if r.line == target.line:
-            continue
-        ia, ib = index[r.a], index[r.b]
-        edges.append(Edge(ia, ib, r.high, r.line, "upper", r.high))
-        edges.append(Edge(ib, ia, -r.low, r.line, "lower", r.low))
+    other_rows = [r for r in rows if r.line != target.line]
+    edges = _constraint_edges(other_rows, index)
 
     ia, ib = index[target.a], index[target.b]
     # 上界：t(乙) − t(甲) 的最紧上界 = 甲 -> 乙 最短路
@@ -345,4 +345,177 @@ def check_redundancy(text: str, line: int) -> dict:
         "verdict": "removable" if removable else "necessary",
         "event_count": len(names),
         "line_count": len(rows),
+    }
+
+
+# ---------- 两版比较 ----------
+
+
+def _feasible_minutes(rows: list[Row]) -> tuple[list[str], dict[str, int]]:
+    """对已确认无矛盾的约束行求规范可行时刻（最早事件平移到第 0 分钟）。
+
+    与 solve() 的时间线完全同一组解：虚拟源 Bellman-Ford 给出每个事件
+    t(x) − t(earliest) ≤ dist 的最紧上界，整体平移使最小距离为 0。
+    """
+    names, index = _index_events(rows)
+    edges = _constraint_edges(rows, index)
+    n = len(names)
+    if n == 0:
+        return names, {}
+    dist = [0] * n
+    for _ in range(n):
+        relaxed = False
+        for e in edges:
+            cand = dist[e.u] + e.w
+            if cand < dist[e.v]:
+                dist[e.v] = cand
+                relaxed = True
+        if not relaxed:
+            break
+    base = min(dist)
+    minutes = {names[i]: dist[i] - base for i in range(n)}
+    return names, minutes
+
+
+def _row_payload(r: Row) -> dict:
+    return {"line": r.line, "a": r.a, "b": r.b, "low": r.low, "high": r.high}
+
+
+def _row_tuple(r: Row) -> tuple[str, str, int, int]:
+    return (r.a, r.b, r.low, r.high)
+
+
+def _diff_rows(base_rows: list[Row], revised_rows: list[Row]) -> list[dict]:
+    """按“整行四元组完全一致 ⇒ 未改动”匹配两版行，列出新增、删除、修改的行。
+
+    修改行按有序事件对（甲, 乙）对齐，方向相反的描述不算同一条；
+    同一事件对有多行时，先做多重集精确匹配，剩下的再两两配对。
+    """
+    rem_base: dict[tuple[str, str, int, int], list[Row]] = {}
+    for r in base_rows:
+        rem_base.setdefault(_row_tuple(r), []).append(r)
+
+    matched_rev_lines: set[int] = set()
+    for r in revised_rows:
+        bucket = rem_base.get(_row_tuple(r))
+        if bucket:
+            bucket.pop()
+            matched_rev_lines.add(r.line)
+
+    changed_rev = [r for r in revised_rows if r.line not in matched_rev_lines]
+    left_base = sorted((r for bucket in rem_base.values() for r in bucket), key=lambda r: r.line)
+
+    # 未完全一致的行中，按有序事件对配出“修改”，配不上的分别归入删除/新增
+    rev_by_pair: dict[tuple[str, str], list[Row]] = {}
+    for r in changed_rev:
+        rev_by_pair.setdefault((r.a, r.b), []).append(r)
+
+    removed: list[Row] = []
+    modified: list[dict] = []
+    for rb in left_base:
+        cand = rev_by_pair.get((rb.a, rb.b))
+        if cand:
+            rr = cand.pop(0)
+            modified.append({
+                "type": "modified",
+                "base": _row_payload(rb),
+                "revised": _row_payload(rr),
+            })
+        else:
+            removed.append(rb)
+
+    added = sorted((r for bucket in rev_by_pair.values() for r in bucket), key=lambda r: r.line)
+
+    diffs: list[dict] = [
+        {"type": "added", "revised": _row_payload(r)} for r in added
+    ]
+    diffs.extend(modified)
+    diffs.extend(
+        {"type": "removed", "base": _row_payload(r)} for r in removed
+    )
+    return diffs
+
+
+def compare_texts(base_text: str, revised_text: str) -> dict:
+    """两版文本独立校验、独立联立后按事件名对齐比较。
+
+    任一版本校验失败（error）或区间矛盾（conflict），都不产生差异结论，
+    仅在 base / revised 字段中分别返回该版本自己的错误或闭合矛盾链。
+    """
+    versions = {"base": solve(base_text), "revised": solve(revised_text)}
+    if any(v["status"] != "ok" for v in versions.values()):
+        return {
+            "status": "error",
+            "message": "任一版本存在校验错误或区间矛盾，两版比较不成立，未生成差异结论。",
+            **versions,
+        }
+
+    base_rows, _ = parse_text(base_text)
+    revised_rows, _ = parse_text(revised_text)
+
+    base_names, base_min = _feasible_minutes(base_rows)
+    rev_names, rev_min = _feasible_minutes(revised_rows)
+    base_set, rev_set = set(base_names), set(rev_names)
+    common = [name for name in base_names if name in rev_set]
+
+    line_diffs = _diff_rows(base_rows, revised_rows)
+    # 与基准不同的修订行：新增或修改（区间被放宽/收紧都算“导致变化”的候选）
+    changed_rev_rows = [
+        d["revised"] for d in line_diffs if d["type"] in ("added", "modified")
+    ]
+    changed_rev_lines = {r["line"] for r in changed_rev_rows}
+
+    # 反事实证据：删去某条修订行后重新联立，若该共同事件的分钟随之变化，
+    # 则该行确实参与决定了它的新时刻。删除行/新增事件不在此列（另行展示）。
+    # 删尽所有约束时该事件从解中消失，同样视为“由该行决定”。
+    def evidence_for(event: str) -> list[dict]:
+        lines: list[dict] = []
+        for r in changed_rev_rows:
+            kept = [x for x in revised_rows if x.line != r["line"]]
+            _, alt_min = _feasible_minutes(kept)
+            if event not in alt_min or alt_min[event] != rev_min[event]:
+                lines.append(r)
+        return lines
+
+    aligned = []
+    for name in common:
+        bm, rm = base_min[name], rev_min[name]
+        aligned.append({
+            "event": name,
+            "base_minute": bm,
+            "revised_minute": rm,
+            "delta": rm - bm,
+            "changed": rm != bm,
+            "evidence_lines": evidence_for(name) if rm != bm else [],
+        })
+    aligned.sort(key=lambda x: (not x["changed"], x["revised_minute"], x["event"]))
+
+    added_events = [
+        {"event": name, "revised_minute": rev_min[name]}
+        for name in rev_names if name not in base_set
+    ]
+    removed_events = [
+        {"event": name, "base_minute": base_min[name]}
+        for name in base_names if name not in rev_set
+    ]
+
+    return {
+        "status": "ok",
+        "base": versions["base"],
+        "revised": versions["revised"],
+        "aligned": aligned,
+        "added_events": added_events,
+        "removed_events": removed_events,
+        "changed_lines": line_diffs,
+        "summary": {
+            "base_event_count": len(base_names),
+            "revised_event_count": len(rev_names),
+            "base_line_count": len(base_rows),
+            "revised_line_count": len(revised_rows),
+            "common_count": len(common),
+            "shifted_count": sum(1 for x in aligned if x["changed"]),
+            "added_count": len(added_events),
+            "removed_count": len(removed_events),
+            "changed_line_count": len(changed_rev_lines),
+        },
     }
