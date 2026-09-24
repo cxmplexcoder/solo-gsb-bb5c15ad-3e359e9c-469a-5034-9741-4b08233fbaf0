@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>口述史事件时间线核对</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>口述史事件时间线核对</h1>
+      <p class="subtitle">
+        每行输入 <code>事件甲,事件乙,最少分钟,最多分钟</code>，表示
+        <strong>事件乙比事件甲晚</strong>发生的时间差区间（分钟，可填负数表示乙更早）。
+        系统联立全部区间：若互相矛盾，给出由<strong>原始行号与上下界</strong>构成的闭合矛盾链；
+        否则给出以最早事件为第 0 分钟的可行时间线。
+        此外可任选一条原始行做<strong>约束冗余核对</strong>：删去该行后，检验其余叙述是否仍必然满足它的时间差区间。
+      </p>
+    </header>
+
+    <section class="input-area">
+      <label for="input"><strong>事件区间（每行一条）</strong></label>
+      <textarea id="input" rows="10" spellcheck="false"
+        placeholder="起床,吃饭,30,120&#10;吃饭,开会,60,180&#10;开会,起床,-200,-150"></textarea>
+      <div class="button-row">
+        <button id="btn-solve" class="primary">联立核对</button>
+        <button id="btn-example-ok">填入可行示例</button>
+        <button id="btn-example-conflict">填入矛盾示例</button>
+        <button id="btn-clear" class="ghost">清空</button>
+      </div>
+    </section>
+
+    <section class="input-area">
+      <label for="redundancy-line"><strong>约束冗余核对</strong></label>
+      <p class="muted" style="margin-top:0">
+        从上方文本中选一条原始行：后端删去该行对应的上、下界约束，求其余约束对这两个事件时间差的
+        <strong>最紧下界与上界</strong>（推不出的端点标为无界，并给出有界端点的推导路径、原始行号与所用界值）。
+        仅当推导区间完全落在所选行区间内时判为<strong>“可删”</strong>，否则标为<strong>“必要”</strong>。
+      </p>
+      <div class="redundancy-row">
+        <select id="redundancy-line"></select>
+        <button id="btn-redundancy" class="primary">核对所选行</button>
+      </div>
+    </section>
+
+    <section id="redundancy-result" aria-live="polite"></section>
+
+    <section id="result" aria-live="polite"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
