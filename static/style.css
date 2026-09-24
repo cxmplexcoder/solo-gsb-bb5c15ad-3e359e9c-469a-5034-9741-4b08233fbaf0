@@ -186,3 +186,68 @@ ul.plain li { padding: 4px 0; font-size: 14px; }
 
 .muted { color: var(--muted); font-size: 13px; }
 .ok-text { color: var(--ok); font-weight: 600; }
+
+/* 两版比较 */
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 640px) {
+  .compare-grid { grid-template-columns: 1fr; }
+}
+.compare-grid > div label { font-size: 14px; margin-bottom: 6px; }
+
+.kind-tag {
+  display: inline-block;
+  font-size: 12px;
+  padding: 1px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.kind-tag.changed { background: #fbf1e4; color: #8a5a2b; border: 1px solid #e8d0b0; }
+.kind-tag.unchanged { background: #eef2ee; color: #5c6b5c; border: 1px solid #d8e0d8; }
+.kind-tag.added { background: #e8f5ec; color: #1e7d46; border: 1px solid #bfe2cd; }
+.kind-tag.removed { background: #fdecea; color: #b3261e; border: 1px solid #f0c4c0; }
+.kind-tag.incomparable { background: #f0ece2; color: var(--muted); border: 1px solid var(--line); }
+
+.delta-up { color: var(--warn); font-weight: 700; }
+.delta-down { color: #2b5d8a; font-weight: 700; }
+.delta-zero { color: var(--muted); }
+.delta-na { color: var(--muted); }
+
+.evidence-lines {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.evidence-card h3 { word-break: break-all; }
+.evidence-card .ev-head {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.change-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 0 7px;
+  border-radius: 999px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.change-tag.added { background: #e8f5ec; color: #1e7d46; }
+.change-tag.changed { background: #fbf1e4; color: #8a5a2b; }
+.change-tag.unchanged { background: #ece7db; color: var(--muted); }
+
+.compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 640px) {
+  .compare-cols { grid-template-columns: 1fr; }
+}
+.compare-cols h2 { font-size: 16px; margin: 0 0 8px; }
+.compare-side-head {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}

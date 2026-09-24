@@ -18,11 +18,33 @@ const EXAMPLE_CONFLICT = [
   "晚饭,早饭,20,50",
 ].join("\n");
 
+// 两版比较示例：修订版放宽了前两链下界、把“出门”合并掉（删除事件），
+// 并新增“午休、下班”事件链。
+const EXAMPLE_COMPARE_BASE = [
+  "起床,洗漱,10,30",
+  "洗漱,早饭,15,45",
+  "早饭,出门,20,60",
+  "出门,开会,40,90",
+  "起床,开会,80,240",
+].join("\n");
+
+const EXAMPLE_COMPARE_REVISED = [
+  "起床,洗漱,15,35",
+  "洗漱,早饭,20,50",
+  "早饭,开会,50,100",
+  "起床,开会,80,240",
+  "开会,午休,30,60",
+  "午休,下班,60,120",
+].join("\n");
+
 const $ = (id) => document.getElementById(id);
 const resultEl = $("result");
 const redundancyEl = $("redundancy-result");
 const inputEl = $("input");
 const lineSelect = $("redundancy-line");
+const compareEl = $("compare-result");
+const baseEl = $("compare-base");
+const revisedEl = $("compare-revised");
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -376,3 +398,196 @@ inputEl.addEventListener("input", () => {
   redundancyEl.innerHTML = "";  // 文本已变，旧的冗余结论作废
 });
 refreshLineOptions();
+
+// ---------- 两版比较 ----------
+
+const KIND_LABEL = {
+  changed: "变化",
+  unchanged: "未变",
+  added: "新增",
+  removed: "删除",
+  incomparable: "不可比",
+};
+
+const CHANGE_LABEL = {
+  added: "新增行",
+  changed: "已修改",
+  unchanged: "区间未改",
+};
+
+function fmtDelta(delta) {
+  if (delta === null || delta === undefined) return { text: "—", cls: "delta-na" };
+  if (delta > 0) return { text: `+${delta}`, cls: "delta-up" };
+  if (delta < 0) return { text: `−${Math.abs(delta)}`, cls: "delta-down" };
+  return { text: "0", cls: "delta-zero" };
+}
+
+function fmtMinute(m) {
+  return m === null || m === undefined ? "—" : m;
+}
+
+// 证据明细表：在冗余核对路径表基础上增加该行相对基准的变化标记
+function comparePathTableHtml(steps) {
+  const rows = steps.map((s) => `
+    <tr>
+      <td class="num">${s.line}</td>
+      <td>${esc(s.from)} → ${esc(s.to)}</td>
+      <td><span class="tag ${s.kind}">${esc(s.kind_label)}</span></td>
+      <td class="num">${s.bound}</td>
+      <td>${esc(s.relation)}</td>
+      <td>${s.change ? `<span class="change-tag ${s.change}">${esc(CHANGE_LABEL[s.change] || s.change)}</span>` : ""}</td>
+    </tr>`).join("");
+  return `
+    <table>
+      <thead><tr>
+        <th class="num">修订行号</th><th>图中方向</th><th>使用的界</th>
+        <th class="num">界值</th><th>含义</th><th>相对基准</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderCompareOk(data) {
+  const rows = data.alignment.map((e) => {
+    // 后端共同事件统一为 common；有证据（delta≠0 且可比较）显示为“变化”，否则“未变”
+    const renderKind = e.kind === "common"
+      ? (e.evidence ? "changed" : "unchanged")
+      : e.kind;
+    const d = fmtDelta(e.delta);
+    let lines = "";
+    if (e.evidence) {
+      lines = e.evidence.is_anchor
+        ? `<span class="evidence-lines">（第 0 分钟锚点事件）</span>`
+        : `<span class="evidence-lines">第 ${e.evidence.lines.join("、")} 行</span>`;
+    }
+    return `<tr>
+      <td><span class="kind-tag ${renderKind}">${esc(KIND_LABEL[renderKind] || renderKind)}</span></td>
+      <td>${esc(e.event)}</td>
+      <td class="num">${fmtMinute(e.base_minute)}</td>
+      <td class="num">${fmtMinute(e.revised_minute)}</td>
+      <td class="num ${d.cls}">${d.text}</td>
+      <td>${lines}</td>
+    </tr>`;
+  }).join("");
+
+  const shiftNote = data.anchor_shifted
+    ? `<p class="muted">⚠ 两版第 0 分钟事件不同（基准：${esc(data.base.anchor)}；修订：${esc(data.revised.anchor)}）。
+       分钟数仍各自从本版最早事件起算；与公共锚点不连通的事件标为<strong>“不可比”</strong>，其分钟差只是各事件组件独立归零的结果，不构成修订变化。</p>`
+    : `<p class="muted">两版共同以“${esc(data.base.anchor)}”为第 0 分钟事件，变化分钟数即相对同一锚点的时刻差。</p>`;
+
+  const banner = `
+    <div class="banner ok">
+      <h2>✓ 两版比较完成</h2>
+      <p>共同事件 ${data.common_count} 个（其中 <strong>${data.changed_count}</strong> 个分钟发生变化）；
+      修订版新增 <strong>${data.added_count}</strong> 个事件、删除 <strong>${data.removed_count}</strong> 个事件
+      ${data.incomparable_count ? `、<strong>${data.incomparable_count}</strong> 个事件与锚点不连通、不可比` : ""}。
+      基准 ${data.base.line_count} 行 / ${data.base.event_count} 事件；修订 ${data.revised.line_count} 行 / ${data.revised.event_count} 事件。</p>
+    </div>`;
+
+  const tableCard = `
+    <div class="card">
+      <h3>事件对齐表</h3>
+      <table>
+        <thead><tr>
+          <th>类型</th><th>事件</th>
+          <th class="num">基准时刻</th><th class="num">修订时刻</th>
+          <th class="num">变化分钟</th><th>导致变化的修订行</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${shiftNote}
+    </div>`;
+
+  // 仅为“分钟发生变化”的共同事件展开修订时刻的推导路径证据
+  const evidenceCards = data.alignment
+    .filter((e) => e.kind === "common" && e.evidence && !e.evidence.is_anchor)
+    .map((e) => {
+      const ev = e.evidence;
+      const d = fmtDelta(e.delta);
+      const dirText = ev.direction === "upper"
+        ? `修订时刻顶在该事件相对锚点的最紧<strong>上界 ${ev.bound}</strong>。`
+        : `修订时刻顶在该事件相对锚点的最紧<strong>下界 ${ev.bound}</strong>。`;
+      return `
+      <div class="card evidence-card">
+        <h3>变更行证据：${esc(e.event)}（${e.base_minute} → ${e.revised_minute}，${d.text} 分钟）</h3>
+        <p class="ev-head">${dirText}推出该时刻用到的修订行为<strong>第 ${ev.lines.join("、")} 行</strong>；
+        路径每环标注修订行号、所用界值，以及该行相对基准是“已修改 / 新增 / 区间未改”。</p>
+        ${pathChainHtml(ev.path)}
+        ${comparePathTableHtml(ev.path)}
+      </div>`;
+    }).join("");
+
+  compareEl.innerHTML = banner + tableCard + evidenceCards;
+}
+
+// 一版无效/矛盾时，在该栏渲染错误列表或闭合矛盾链；不生成任何差异结论
+function renderCompareSide(container, title, side) {
+  const head = document.createElement("div");
+  head.innerHTML = side.status === "conflict"
+    ? `<h2>${title}：区间矛盾</h2>
+       <p class="compare-side-head">该版本存在闭合矛盾链，不参与差异比较：</p>`
+    : `<h2>${title}：校验未通过</h2>
+       <p class="compare-side-head">该版本输入无效，不参与差异比较：</p>`;
+  const body = document.createElement("div");
+  if (side.status === "conflict") {
+    renderConflict(side, body);  // 现有矛盾链渲染（含链图与明细表）
+  } else {
+    renderErrors(side.errors || [{ line: null, message: "未知错误。" }], body);
+  }
+  container.innerHTML = "";
+  container.appendChild(head);
+  container.appendChild(body);
+}
+
+async function compare() {
+  compareEl.innerHTML = `<div class="card muted">两版独立联立中…</div>`;
+  try {
+    const resp = await fetch("/api/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base: baseEl.value, revised: revisedEl.value }),
+    });
+    const data = await resp.json();
+    if (data.status === "ok") {
+      renderCompareOk(data);
+      return;
+    }
+    // 任一版无效或矛盾：分别展示对应错误/矛盾链，不给差异结论
+    const cols = document.createElement("div");
+    cols.className = "compare-cols";
+    const baseCard = document.createElement("div");
+    const revCard = document.createElement("div");
+    baseCard.className = "card";
+    revCard.className = "card";
+    renderCompareSide(baseCard, "基准文本", data.base);
+    renderCompareSide(revCard, "修订文本", data.revised);
+    cols.appendChild(baseCard);
+    cols.appendChild(revCard);
+    compareEl.innerHTML = `
+      <div class="banner err">
+        <h2>无法生成两版差异结论</h2>
+        <p>基准版或修订版存在校验错误或区间矛盾，已在下方分别列出；请修正后重新比较。</p>
+      </div>`;
+    compareEl.appendChild(cols);
+  } catch (err) {
+    compareEl.innerHTML = `
+      <div class="banner err"><h2>请求失败</h2><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+$("btn-compare").addEventListener("click", compare);
+$("btn-compare-example").addEventListener("click", () => {
+  baseEl.value = EXAMPLE_COMPARE_BASE;
+  revisedEl.value = EXAMPLE_COMPARE_REVISED;
+  compare();
+});
+$("btn-compare-clear").addEventListener("click", () => {
+  baseEl.value = "";
+  revisedEl.value = "";
+  compareEl.innerHTML = "";
+  baseEl.focus();
+});
+// 任一输入框内容变化，旧的比较结果立即作废，避免展示与输入不一致的结论
+[baseEl, revisedEl].forEach((el) => {
+  el.addEventListener("input", () => { compareEl.innerHTML = ""; });
+});

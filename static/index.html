@@ -15,7 +15,8 @@
         <strong>事件乙比事件甲晚</strong>发生的时间差区间（分钟，可填负数表示乙更早）。
         系统联立全部区间：若互相矛盾，给出由<strong>原始行号与上下界</strong>构成的闭合矛盾链；
         否则给出以最早事件为第 0 分钟的可行时间线。
-        此外可任选一条原始行做<strong>约束冗余核对</strong>：删去该行后，检验其余叙述是否仍必然满足它的时间差区间。
+        此外可任选一条原始行做<strong>约束冗余核对</strong>：删去该行后，检验其余叙述是否仍必然满足它的时间差区间；
+        也可把<strong>基准版与修订版</strong>两版文本分别粘贴做<strong>两版比较</strong>：按事件名对齐，给出新增、删除事件与共同事件的分钟变化及修订行证据。
       </p>
     </header>
 
@@ -45,6 +46,34 @@
     </section>
 
     <section id="redundancy-result" aria-live="polite"></section>
+
+    <section class="input-area">
+      <label><strong>两版比较（基准文本 / 修订文本）</strong></label>
+      <p class="muted" style="margin-top:0">
+        分别粘贴<strong>基准版</strong>与<strong>修订版</strong>区间文本，后端各自独立校验、独立联立后按事件名对齐：
+        标出共同事件的基准/修订时刻与<strong>变化分钟数</strong>，并给出<strong>导致变化的修订行号</strong>及其推导路径；
+        同时列出修订版<strong>新增</strong>、<strong>删除</strong>的事件。任一版校验无效或存在矛盾时，分别显示该版错误或闭合矛盾链，不生成差异结论。
+      </p>
+      <div class="compare-grid">
+        <div>
+          <label for="compare-base">基准文本</label>
+          <textarea id="compare-base" class="compare-input" rows="8" spellcheck="false"
+            placeholder="起床,洗漱,10,30&#10;洗漱,早饭,15,45&#10;…"></textarea>
+        </div>
+        <div>
+          <label for="compare-revised">修订文本</label>
+          <textarea id="compare-revised" class="compare-input" rows="8" spellcheck="false"
+            placeholder="起床,洗漱,15,35&#10;洗漱,早饭,20,50&#10;…"></textarea>
+        </div>
+      </div>
+      <div class="button-row">
+        <button id="btn-compare" class="primary">比较两版</button>
+        <button id="btn-compare-example">填入两版示例</button>
+        <button id="btn-compare-clear" class="ghost">清空两版</button>
+      </div>
+    </section>
+
+    <section id="compare-result" aria-live="polite"></section>
 
     <section id="result" aria-live="polite"></section>
   </main>

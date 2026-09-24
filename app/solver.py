@@ -15,6 +15,12 @@
     甲->乙 最短路 = 其余约束能推出的 t(乙)-t(甲) 最紧上界（不可达则无界）
     乙->甲 最短路取负 = 其余约束能推出的 t(乙)-t(甲) 最紧下界（不可达则无界）
 仅当推导区间 [下界, 上界] 完全落在所选行区间 [lo, hi] 内时判为“可删”。
+
+两版比较（compare_texts）：基准文本与修订文本各自独立 parse_text + solve_rows，
+任一版校验失败或存在负环时，分别原样带上该版错误/闭合矛盾链，不生成差异结论；
+两版均可解时，以“最早事件第 0 分钟”的规范化时刻按事件名对齐，列出共同事件的
+两版时刻与变化分钟数，并用 _derive_bound 复用冗余核对同款最短路推导，
+把推出修订时刻的修订行（原始行号、所用界值）作为变化证据；同时给出新增、删除事件。
 """
 
 from __future__ import annotations
@@ -119,18 +125,8 @@ def _edge_step(names: list[str], e: Edge) -> dict:
     }
 
 
-def solve(text: str) -> dict:
-    rows, errors = parse_text(text)
-    if errors:
-        return {"status": "error", "errors": errors}
-
-    if not rows:
-        return {
-            "status": "error",
-            "errors": [{"line": None, "message": "没有可联立的有效约束行。"}],
-        }
-
-    # 事件按首次出现顺序编号
+def _build_graph(rows: list[Row]) -> tuple[list[str], dict[str, int], list[Edge]]:
+    """事件按首次出现顺序编号，并把每行转换为上界、下界两条边。"""
     names: list[str] = []
     index: dict[str, int] = {}
     for r in rows:
@@ -144,7 +140,16 @@ def solve(text: str) -> dict:
         ia, ib = index[r.a], index[r.b]
         edges.append(Edge(ia, ib, r.high, r.line, "upper", r.high))
         edges.append(Edge(ib, ia, -r.low, r.line, "lower", r.low))
+    return names, index, edges
 
+
+def solve_rows(rows: list[Row]) -> dict:
+    """对已通过校验的行联立 Bellman-Ford，返回内部求解结构（供 solve / 冗余核对 / 两版比较复用）。
+
+    成功时含 rows/names/index/edges/dist/minutes（minutes 已平移到最早事件为 0）；
+    存在负环时直接返回 _conflict_result 的公开矛盾链结构。
+    """
+    names, index, edges = _build_graph(rows)
     n = len(names)
     dist = [0] * n
     pred: list[tuple[int, Edge] | None] = [None] * n
@@ -169,9 +174,29 @@ def solve(text: str) -> dict:
 
     # 平移使最早事件落在第 0 分钟（差值不变，约束全部保留）
     base = min(dist)
+    minutes = [dist[i] - base for i in range(n)]
+    return {
+        "status": "ok",
+        "rows": rows,
+        "names": names,
+        "index": index,
+        "edges": edges,
+        "dist": dist,
+        "minutes": minutes,
+    }
+
+
+def _format_ok(system: dict) -> dict:
+    """把 solve_rows 的内部成功结构转为 /api/solve 的公开返回格式。"""
+    names = system["names"]
+    minutes = system["minutes"]
+    rows = system["rows"]
+    index = system["index"]
+    dist = system["dist"]
+
     timeline = [
-        {"event": names[i], "minute": dist[i] - base}
-        for i in range(n)
+        {"event": names[i], "minute": minutes[i]}
+        for i in range(len(names))
     ]
     timeline.sort(key=lambda x: (x["minute"], x["event"]))
 
@@ -191,9 +216,27 @@ def solve(text: str) -> dict:
         "status": "ok",
         "timeline": timeline,
         "differences": differences,
-        "event_count": n,
+        "event_count": len(names),
         "line_count": len(rows),
     }
+
+
+def _parse_and_solve(text: str) -> tuple[list[Row], dict]:
+    """解析校验一版文本并联立。成功返回 solve_rows 内部结构，否则返回公开错误结构。"""
+    rows, errors = parse_text(text)
+    if errors:
+        return rows, {"status": "error", "errors": errors}
+    if not rows:
+        return rows, {
+            "status": "error",
+            "errors": [{"line": None, "message": "没有可联立的有效约束行。"}],
+        }
+    return rows, solve_rows(rows)
+
+
+def solve(text: str) -> dict:
+    _, result = _parse_and_solve(text)
+    return _format_ok(result) if result["status"] == "ok" else result
 
 
 def _conflict_result(names: list[str], pred, start: int, n: int) -> dict:
@@ -284,11 +327,10 @@ def check_redundancy(text: str, line: int) -> dict:
 
     输入无效或原约束互相冲突时，直接返回 solve() 的现有求解结果。
     """
-    base = solve(text)
-    if base["status"] != "ok":
-        return base
+    rows, result = _parse_and_solve(text)
+    if result["status"] != "ok":
+        return result
 
-    rows, _ = parse_text(text)  # solve 已通过，此处必然无校验错误
     target = next((r for r in rows if r.line == line), None)
     if target is None:
         return {
@@ -296,22 +338,11 @@ def check_redundancy(text: str, line: int) -> dict:
             "errors": [{"line": line, "message": f"第{line}行不是一条有效约束行（空行或不存在的行号），无法核对。"}],
         }
 
-    names: list[str] = []
-    index: dict[str, int] = {}
-    for r in rows:
-        for name in (r.a, r.b):
-            if name not in index:
-                index[name] = len(names)
-                names.append(name)
+    names = result["names"]
+    index = result["index"]
 
     # 移除所选行对应的上、下界两条约束，其余行照常建边
-    edges: list[Edge] = []
-    for r in rows:
-        if r.line == target.line:
-            continue
-        ia, ib = index[r.a], index[r.b]
-        edges.append(Edge(ia, ib, r.high, r.line, "upper", r.high))
-        edges.append(Edge(ib, ia, -r.low, r.line, "lower", r.low))
+    edges = [e for e in result["edges"] if e.line != target.line]
 
     ia, ib = index[target.a], index[target.b]
     # 上界：t(乙) − t(甲) 的最紧上界 = 甲 -> 乙 最短路
@@ -345,4 +376,170 @@ def check_redundancy(text: str, line: int) -> dict:
         "verdict": "removable" if removable else "necessary",
         "event_count": len(names),
         "line_count": len(rows),
+    }
+
+
+# ---------- 两版比较 ----------
+
+def _evidence_for(system: dict, anchor: str, target: str, minute: int, annotate) -> dict | None:
+    """修订版中确定 target 相对第 0 分钟事件 anchor 的规范化时刻的推导路径证据。
+
+    复用冗余核对同款 _derive_bound：anchor -> target 最短路给出最紧上界，
+    target -> anchor 最短路取负给出最紧下界；规范化可行解恰好顶在其中一个紧界上，
+    选中与 minute 相等的那条路径，路径上的修订行原始行号即“导致变化的修订行号”。
+    target 与 anchor 不连通（属于另一个独立事件组件）时返回 None：两版各按自己的
+    最早事件归零，该事件的“分钟变化”只是规范化假象，不构成可比差异。
+    """
+    names = system["names"]
+    edges = system["edges"]
+    index = system["index"]
+    ia, it = index[anchor], index[target]
+
+    if ia == it:
+        return {"is_anchor": True, "direction": None, "bound": 0, "lines": [], "path": []}
+
+    upper_val, upper_path = _derive_bound(names, edges, ia, it)
+    back_val, back_path = _derive_bound(names, edges, it, ia)
+    lower_val = -back_val if back_val is not None else None
+    if upper_val is None and lower_val is None:
+        return None  # target 与锚点分属互不连通的事件组件，无法相对比较
+
+    if lower_val is not None and lower_val == minute:
+        path, direction, bound = back_path, "lower", lower_val
+    elif upper_val is not None and upper_val == minute:
+        path, direction, bound = upper_path, "upper", upper_val
+    elif lower_val is not None:  # 防御性回退：正常情况下必有一个紧界等于 minute
+        path, direction, bound = back_path, "lower", lower_val
+    else:
+        path, direction, bound = upper_path, "upper", upper_val
+
+    path = annotate(path)
+    lines: list[int] = []
+    for step in path:  # 同一行的上、下界极端情况下可能都在路径上，行号去重保序
+        if step["line"] not in lines:
+            lines.append(step["line"])
+    return {"is_anchor": False, "direction": direction, "bound": bound, "lines": lines, "path": path}
+
+
+def compare_texts(base_text: str, revised_text: str) -> dict:
+    """两版独立校验、独立联立后按事件名对齐比较。
+
+    任一版无效（error）或互相矛盾（conflict）时，不生成差异结论，
+    分别在 base / revised 字段中带回该版的完整公开求解结果（错误列表或闭合矛盾链）。
+    """
+    base_rows, base_res = _parse_and_solve(base_text)
+    revised_rows, revised_res = _parse_and_solve(revised_text)
+
+    if base_res["status"] != "ok" or revised_res["status"] != "ok":
+        return {
+            "status": "invalid",
+            "base": _format_ok(base_res) if base_res["status"] == "ok" else base_res,
+            "revised": _format_ok(revised_res) if revised_res["status"] == "ok" else revised_res,
+        }
+
+    b_names = base_res["names"]
+    r_names = revised_res["names"]
+    b_minute = dict(zip(b_names, base_res["minutes"]))
+    r_minute = dict(zip(r_names, revised_res["minutes"]))
+    b_set, r_set = set(b_names), set(r_names)
+
+    # 两版各自“第 0 分钟”的事件；优先选用两版共有的第 0 分钟事件作锚点，
+    # 使共同事件的变化分钟数不夹带整体平移；没有共有锚点时各取本版最早事件。
+    b_zeros = [name for name in b_names if b_minute[name] == 0]
+    r_zeros = [name for name in r_names if r_minute[name] == 0]
+    common_zero = next((name for name in b_zeros if name in r_zeros), None)
+    base_anchor = common_zero or b_zeros[0]
+    revised_anchor = common_zero or r_zeros[0]
+
+    # 基准行按书写事件对索引，用于标注修订行相对基准是“新增/修改/未变”
+    base_pairs: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for r in base_rows:
+        base_pairs.setdefault((r.a, r.b), []).append((r.low, r.high))
+    revised_by_line = {r.line: r for r in revised_rows}
+
+    def annotate(path: list[dict]) -> list[dict]:
+        for step in path:
+            row = revised_by_line.get(step["line"])
+            label = "unchanged"
+            if row is not None:
+                base_bounds = base_pairs.get((row.a, row.b))
+                if base_bounds is None:
+                    label = "added"
+                elif (row.low, row.high) not in base_bounds:
+                    label = "changed"
+            step["change"] = label
+        return path
+
+    alignment: list[dict] = []
+    changed_count = 0
+
+    # 共同事件：按基准版首次出现顺序对齐
+    incomparable_count = 0
+    for name in b_names:
+        if name not in r_set:
+            continue
+        bm, rm = b_minute[name], r_minute[name]
+        delta = rm - bm
+        entry: dict = {
+            "kind": "common",
+            "event": name,
+            "base_minute": bm,
+            "revised_minute": rm,
+            "delta": delta,
+            "evidence": None,
+        }
+        if delta != 0:
+            evidence = _evidence_for(revised_res, revised_anchor, name, rm, annotate)
+            if evidence is None:
+                # 与两版公共锚点不连通：分钟差只是各组件独立归零的假象，不判为变化
+                entry["kind"] = "incomparable"
+                incomparable_count += 1
+            else:
+                changed_count += 1
+                entry["evidence"] = evidence
+        alignment.append(entry)
+
+    # 删除事件：仅基准版存在（保持基准版首次出现顺序）
+    for name in b_names:
+        if name not in r_set:
+            alignment.append({
+                "kind": "removed",
+                "event": name,
+                "base_minute": b_minute[name],
+                "revised_minute": None,
+                "delta": None,
+                "evidence": None,
+            })
+
+    # 新增事件：仅修订版存在（保持修订版首次出现顺序）
+    for name in r_names:
+        if name not in b_set:
+            alignment.append({
+                "kind": "added",
+                "event": name,
+                "base_minute": None,
+                "revised_minute": r_minute[name],
+                "delta": None,
+                "evidence": None,
+            })
+
+    return {
+        "status": "ok",
+        "base": {
+            "event_count": len(b_names),
+            "line_count": len(base_rows),
+            "anchor": base_anchor,
+        },
+        "revised": {
+            "event_count": len(r_names),
+            "line_count": len(revised_rows),
+            "anchor": revised_anchor,
+        },
+        "anchor_shifted": base_anchor != revised_anchor,
+        "common_count": len(b_set & r_set),
+        "changed_count": changed_count,
+        "incomparable_count": incomparable_count,
+        "added_count": len(r_set - b_set),
+        "removed_count": len(b_set - r_set),
+        "alignment": alignment,
     }
